@@ -226,7 +226,7 @@ R2R_BASE_URL=http://r2r:7272        # or https://r2r.foo.bar
 
 ### R2R Configuration File (sanitized example)
 
-The file `ga_r2r.toml` is copied to `/data/r2r/docker/user_configs/ga/ga_r2r.toml` and mounted into the R2R container at `/app/user_configs/ga/ga_r2r.toml`.
+The file `r2r.toml` is copied to `/data/r2r/docker/user_configs/r2r.toml` and mounted into the R2R container at `/app/user_configs/r2r.toml`.
 
 Key concept: R2R uses LiteLLM as a provider. Model names are prefixed with a provider (e.g., `openai/`, `ollama/`, `anthropic/`, `mistral/`). LiteLLM reads this prefix to send the correct API call shape; the `api_base` points to the LiteLLM proxy which handles load balancing and vendor routing.
 
@@ -387,7 +387,7 @@ R2R_SECRET_KEY=
 R2R_PORT=7272
 R2R_HOST=0.0.0.0
 R2R_LOG_LEVEL=INFO
-R2R_CONFIG_PATH=/app/user_configs/ga/ga_r2r.toml
+R2R_CONFIG_PATH=/app/user_configs/r2r.toml
 R2R_USER_TOOLS_PATH=/app/user_tools
 
 NEXT_PUBLIC_R2R_DEPLOYMENT_URL=http://localhost:7272
@@ -446,9 +446,9 @@ In practice, R2R asks for `model = "openai/r2r-fast"` and posts to `https://lite
 
 ### Docker mount notes
 
-- `ga_r2r.toml` source: `/opt/ga_r2r.toml`
-- Copied to: `/data/r2r/docker/user_configs/ga/ga_r2r.toml`
-- Mounted into container: `/app/user_configs/ga/ga_r2r.toml`
+- `r2r.toml` source: `/opt/r2r.toml`
+- Copied to: `/data/r2r/docker/user_configs/r2r.toml`
+- Mounted into container: `/app/user_configs/r2r.toml`
 
 This keeps the config persistent outside the container and simplifies upgrades.
 
@@ -490,7 +490,7 @@ services:
     env_file:
       - ./r2r.env   # sanitized example in this README
     volumes:
-      - /data/r2r/docker/user_configs/ga/ga_r2r.toml:/app/user_configs/ga/ga_r2r.toml:ro
+      - /data/r2r/docker/user_configs/r2r.toml:/app/user_configs/2r.toml:ro
       - /data/r2r/logs:/app/logs
     ports:
       - "7272:7272"
@@ -529,7 +529,7 @@ Quick start
 - Copy env templates:
   - `cp context_chat_backend/ccbe.env.example context_chat_backend/ccbe.env`
   - `cp context_chat_backend/r2r.env.example context_chat_backend/r2r.env`
-- Put your TOML at `/data/r2r/docker/user_configs/ga/ga_r2r.toml` (as mounted by the compose).
+- Put your TOML at `/data/r2r/docker/user_configs/r2r.toml` (as mounted by the compose).
 - Start the stack:
   - `docker compose -f context_chat_backend/docker-compose.r2r-prod.example.yaml up -d`
 
@@ -695,7 +695,7 @@ Admin guidance
   - `R2R_SKIP_UPSERT_ALL_WITHIN_SECS=172800` (2 days)
   - `R2R_SKIP_UPSERT_META_WITHIN_SECS=345600` (4 days)
 - Monitor logs for: “Upsert skip windows”, “Quick‑skip all …”, “Quick‑skip meta …”. Large rescans should collapse to skips after the first pass.
-- Mirror R2R’s excluded types (`ga_r2r.toml`) in CCBE via `R2R_EXCLUDE_EXTS` so excluded files never upload.
+- Mirror R2R’s excluded types (`r2r.toml`) in CCBE via `R2R_EXCLUDE_EXTS` so excluded files never upload.
 
 ---
 
@@ -744,7 +744,7 @@ QUEUE_MAX_PER_CONSUMER=0
   - `R2R_MAX_WAIT_SECONDS=8`
   - `R2R_RETRY_AFTER_SECONDS=8`
   - `R2R_SKIP_UPSERT_ALL_WITHIN_SECS=172800`, `R2R_SKIP_UPSERT_META_WITHIN_SECS=345600`
-  - `R2R_EXCLUDE_EXTS` aligned to your `ga_r2r.toml`
+  - `R2R_EXCLUDE_EXTS` aligned to your `r2r.toml`
 
 - Medium (several workers, embeddings healthy)
   - `R2R_MAX_INFLIGHT_UPSERTS=3`
