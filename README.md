@@ -47,15 +47,17 @@ Context Chat Backend (CCBE)
 │ • embeddings in-process │ • dedup (doc→chunk→graph) │ • implement same contract │  
 └──────────────────────────────┴──────────────────────────────┴──────────────────────────────┘
 
+
+
+````
+
+**Permissions model (R2R example).** CCBE sends a `userIds` header → adapter maps user/group to **collection filters**; queries only traverse collections the caller is allowed to see.
+
 Visually my deployment architecture looks like this:
 
 [docs/ContextChatR2R.png]
 
 Given API endpoint use, there is significant component and server separation in our environment.
-
-````
-
-**Permissions model (R2R example).** CCBE sends a `userIds` header → adapter maps user/group to **collection filters**; queries only traverse collections the caller is allowed to see.
 
 ---
 
