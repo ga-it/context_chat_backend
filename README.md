@@ -55,7 +55,7 @@ Context Chat Backend (CCBE)
 
 Visually my deployment architecture looks like this:
 
-[docs/ContextChatR2R.png]
+![Deployment architecture](docs/ContextChatR2R.png)
 
 Given API endpoint use, there is significant component and server separation in our environment.
 
