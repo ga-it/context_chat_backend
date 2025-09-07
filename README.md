@@ -557,7 +557,7 @@ Security notes
 - **Dedup + cost control:** document/chunk hashing avoids repeated embeddings and uploads.
 - **Collection‑scoped access:** per‑user collections enforce query/ingest visibility cleanly.
 
-Screenshots (placeholders)
+Screenshots
 - Hatchet workflow runs (queue health and throughput):
   - `docs/screenshots/hatchet-workflow-runs.png`
   - Alt: “Hatchet dashboard showing queued/running/succeeded workflows”
@@ -572,6 +572,11 @@ Screenshots (placeholders)
   - `docs/screenshots/r2r-collections.png`
   - Alt: “R2R Collections page showing user and shared collections”
   - ![R2R Collections](docs/screenshots/r2r-collections.png)
+
+- LiteLLM Proxy backend logs (showing load balancing and routing across servers)
+  - `docs/litellm_proxy.png`
+  - Alt: "LiteLLM Proxy backend logs (showing load balancing and routing across servers)"
+  - ![LiteLLM proxy](docs/litellm_proxy.png)
 
 ### Reverting to upstream behavior
 
