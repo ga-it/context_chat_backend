@@ -935,6 +935,10 @@ class R2rBackend(RagBackend):
             if not filename or not os.path.splitext(filename)[1]:
                 filename = os.path.basename(file_path)
 
+            # Allow disabling Hatchet orchestration if the queue is unhealthy
+            run_with_orch = (
+                os.getenv("R2R_RUN_WITH_ORCHESTRATION", "true").lower() in {"1", "true", "yes"}
+            )
             files = [
                 (
                     "file",
@@ -950,7 +954,7 @@ class R2rBackend(RagBackend):
                     (None, json.dumps(list(collection_ids)), "application/json"),
                 ),
                 ("ingestion_mode", (None, "custom")),
-                ("run_with_orchestration", (None, "true")),
+                ("run_with_orchestration", (None, "true" if run_with_orch else "false")),
             ]
             # Increase in-flight upserts while performing the create call
             with self._metrics_lock:

@@ -8,6 +8,10 @@ This fork introduces a thin **adapter layer** that lets administrators choose th
 - **Opt-in:** select an external backend (e.g., **R2R Graph RAG**, Pinecone, Supabase) via environment variables only.
 - **Same endpoints, same shapes:** request/response contracts and status codes are identical across backends.
 
+See also:
+- Operations/Troubleshooting guide: [support.md](support.md)
+- R2R integration details: [R2R-Integration.md](R2R-Integration.md)
+
 ---
 
 ## Why this exists

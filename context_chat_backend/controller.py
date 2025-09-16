@@ -38,6 +38,12 @@ from nc_py_api.ex_app import persistent_storage, set_handlers
 from pydantic import BaseModel, ValidationInfo, field_validator
 from starlette.responses import FileResponse
 from httpx import HTTPStatusError
+try:
+    # Optional granular exceptions for network timeouts/transients
+    from httpx import TimeoutException, RequestError  # type: ignore
+except Exception:  # pragma: no cover
+    TimeoutException = Exception  # type: ignore
+    RequestError = Exception  # type: ignore
 try:  # Python 3.11+
     BaseExceptionGroupType = BaseExceptionGroup  # type: ignore[name-defined]
 except NameError:  # pragma: no cover - older Pythons
@@ -582,8 +588,11 @@ def _(request: Request, userId: str = Body(embed=True)):
 def _(request: Request):
     backend = getattr(request.app.state, "rag_backend", None)
     if backend:
+        # Match Nextcloud client's expectation: return counts keyed by provider.
+        # The default provider key is 'files__default'. Include an 'all' key
+        # for completeness/debugging, but the client reads 'files__default'.
         count = len(backend.list_documents())
-        return JSONResponse({"all": count})
+        return JSONResponse({"files__default": count, "all": count})
 
     counts = exec_in_proc(target=count_documents_by_provider, args=(vectordb_loader,))
     return JSONResponse(counts)
@@ -600,6 +609,7 @@ def _(request: Request, sources: list[UploadFile]):
     backend = getattr(request.app.state, "rag_backend", None)
     if backend:
         loaded_ids: list[str] = []
+        sources_to_retry: list[str] = []
         for source in sources:
             user_ids = _get_user_ids(source.headers)
             title = source.headers.get("title", source.filename)
@@ -650,13 +660,32 @@ def _(request: Request, sources: list[UploadFile]):
                 "type": source.headers.get("type", ""),
                 "sha256": digest,
             }
-            doc_id = backend.upsert_document(
-                tmp_path, metadata, collection_ids, precomputed_sha256=digest
-            )
-            _safe_remove(tmp_path)
-            loaded_ids.append(doc_id)
+            try:
+                doc_id = backend.upsert_document(
+                    tmp_path, metadata, collection_ids, precomputed_sha256=digest
+                )
+                loaded_ids.append(doc_id)
+            except HTTPStatusError as exc:
+                # Treat server-side/transient errors as retryable to avoid failing the batch
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if (status and int(status) >= 500) or status in {408, 429}:
+                    logger.warning(
+                        "R2R upsert transient error; scheduling retry",
+                        extra={"status": status, "source": filename},
+                    )
+                    sources_to_retry.append(filename)
+                else:
+                    raise
+            except (TimeoutException, RequestError) as exc:  # type: ignore[misc]
+                logger.warning(
+                    "R2R upsert network error; scheduling retry",
+                    extra={"error": str(exc), "source": filename},
+                )
+                sources_to_retry.append(filename)
+            finally:
+                _safe_remove(tmp_path)
 
-        return JSONResponse({"loaded_sources": loaded_ids, "sources_to_retry": []})
+        return JSONResponse({"loaded_sources": loaded_ids, "sources_to_retry": sources_to_retry})
 
     # builtin path
     for source in sources:

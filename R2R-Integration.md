@@ -2,6 +2,8 @@
 
 This document captures what we learned integrating the Context Chat Backend (CCBE) with an external R2R retrieval/RAG service and making it work reliably in Nextcloud Context Chat.
 
+For operations and troubleshooting, see the support guide: [support.md](support.md)
+
 ## Overview
 
 - CCBE supports two RAG modes controlled by `RAG_BACKEND`:
@@ -108,6 +110,15 @@ Implementation references:
    - Python 3.11’s `BaseExceptionGroup` derives from `BaseException`, so unconditional registration caused an `AssertionError` at startup.
    - We now conditionally register the handler only when allowed; otherwise we skip it.
 
+4. Resilient uploads for transient R2R errors:
+   - When `POST /loadSources` is running with `RAG_BACKEND=r2r`, per-source uploads now handle transient R2R failures (HTTP 5xx, 408, 429, or network timeouts) without failing the entire batch.
+   - The response includes `{"loaded_sources": [...], "sources_to_retry": [...]}` so the client can retry only the affected items.
+   - This keeps scans progressing even if the Hatchet queue is briefly backpressured or the API momentarily spikes.
+
+5. Orchestration toggle (bypass Hatchet when needed):
+   - `R2R_RUN_WITH_ORCHESTRATION` (default `true`) controls whether CCBE asks R2R to enqueue ingestion through Hatchet or ingest directly.
+   - Set `R2R_RUN_WITH_ORCHESTRATION=false` to bypass Hatchet temporarily if you see step-start delays or scheduler errors; switch back to `true` when the queue is healthy.
+
 ## Configuration
 
 Environment variables for R2R:
@@ -195,6 +206,21 @@ For R2R load management and caching, look for:
   - CCBE logs an info message and returns a benign identifier, effectively treating the file as "skipped" so the client proceeds.
   - To keep behavior aligned with R2R, set `R2R_EXCLUDE_EXTS` in CCBE to match the extensions excluded in `ga_r2r.toml`.
 
+- Transient 5xx during ingestion with Hatchet warning like “THE TIME TO START THE STEP RUN IS TOO LONG…”:
+  - This originates in Hatchet (axe icon). It means step scheduling is delayed, often due to temporary CPU/IO pressure or queue backpressure.
+  - Mitigations (no code changes): tune worker counts and RabbitMQ QoS as in the Performance Tuning section; ensure `ingestion_concurrency_limit` and Unstructured worker count are set sensibly for your machine.
+  - CCBE will now return `sources_to_retry` for those items so the client can retry without failing the whole batch.
+
+## Maintenance Scripts
+
+- Prune failed ingestions from R2R upsert cache
+  - Path: `context_chat_backend/scripts/prune_r2r_upsert_cache.py`
+  - Purpose: remove entries from the first‑pass upsert cache (at `/data/context_chat_backend/persistent_storage/r2r_upsert_cache.json`) when their R2R `ingestion_status` is `failed` (or the document no longer exists). This lets CCBE re‑upload them on the next scan.
+  - Usage:
+    - `python3 context_chat_backend/scripts/prune_r2r_upsert_cache.py --dry-run`
+    - Env (optional): `R2R_BASE_URL`, `R2R_API_KEY` and/or `R2R_API_TOKEN`, `R2R_UPSERT_CACHE_PATH`
+    - Example: `R2R_BASE_URL=http://192.168.0.86:7272 python3 context_chat_backend/scripts/prune_r2r_upsert_cache.py`
+
 - `context retrieved` but 500 before LLM:
   - Previously due to missing `get_num_tokens`; now handled via heuristic fallback.
 
@@ -276,3 +302,110 @@ Verification:
 - We preserve R2R’s flexibility by tolerating different `results` shapes.
 - We avoid leaking secrets in logs by masking `Authorization` and `X-API-Key` in the emitted curl.
 - Source normalization specifically targets Context Chat expectations (provider name normalization and a space after `:`).
+
+## Performance Tuning (no-drop under heavy ingestion)
+
+To keep the R2R API responsive while large Hatchet queues drain, we adjust deployment configs only (no upstream code changes):
+
+- API server (uvicorn workers and caps)
+  - `r2r_docker_compose.yaml` adds uvicorn flags using env defaults: `--workers`, `--limit-concurrency`, `--timeout-keep-alive`, and `--backlog`.
+  - `r2r.env` defines: `R2R_API_WORKERS=4`, `R2R_API_LIMIT_CONCURRENCY=256`, `R2R_API_KEEPALIVE=15`, `R2R_API_BACKLOG=2048`.
+- Hatchet / RabbitMQ backpressure
+  - `/data/r2r/hatchetconfig/server.yaml`: set `msgQueue.rabbitmq.qos: 25` to avoid hoarding large prefetches.
+- Concurrency limits
+  - `ga_r2r.toml`: `[orchestration] ingestion_concurrency_limit = 4`; `[embedding] concurrent_request_limit = 6`; `[completion] concurrent_request_limit = 3`.
+  - `r2r.env`: `UNSTRUCTURED_NUM_WORKERS=4`.
+- Logging reduction
+  - `r2r.env`: `R2R_LOG_LEVEL=INFO` to reduce I/O during bursts.
+
+These keep ingestion flowing (no drops) and make the dashboard and API on port 7272 responsive during large scans. Switching `RAG_BACKEND` back to `builtin` restores upstream behavior at any time.
+
+## Horizontal Scaling: Unstructured (multi-host)
+
+Goal: spread CPU-heavy document parsing across multiple machines while keeping R2R state centralized. We scale the stateless Unstructured service and point R2R at a small load balancer.
+
+Approach (recommended): keep the existing R2R stack on your primary host, deploy an additional Unstructured service on a second host (e.g., `gazasrv17`), and front both with a lightweight TCP HTTP load balancer.
+
+1) Deploy Unstructured on the second server
+
+- On `gazasrv17`, run an Unstructured container matching the version you use on the primary host. Example `docker-compose.yml`:
+
+  ```yaml
+  services:
+    unstructured:
+      image: ragtoriches/unst-prod
+      environment:
+        - UNSTRUCTURED_NUM_WORKERS=12   # tune per CPU cores
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:7275/health"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+      ports:
+        - "7275:7275"
+      restart: unless-stopped
+  ```
+
+- Validate: `curl http://<gazasrv17-ip>:7275/health` returns `ok`.
+
+2) Add a tiny load balancer on the primary host (sidecar service)
+
+- Add an HAProxy (or NGINX) sidecar to the existing R2R compose and point it at both backends:
+
+  `haproxy.cfg`:
+
+  ```
+  global
+    maxconn 4096
+  defaults
+    mode http
+    timeout connect 5s
+    timeout client  120s
+    timeout server  120s
+  frontend fe_unstructured
+    bind :7277
+    default_backend be_unstructured
+  backend be_unstructured
+    balance leastconn
+    option httpchk GET /health
+    server local      unstructured:7275           check inter 2000 fall 3 rise 2 weight 1
+    server gazasrv17  <gazasrv17-ip>:7275         check inter 2000 fall 3 rise 2 weight 1
+  ```
+
+- Compose sidecar (example snippet to add alongside your `r2r` service):
+
+  ```yaml
+  services:
+    unstructured-lb:
+      image: haproxy:2.8
+      volumes:
+        - /opt/haproxy-unstructured.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      ports:
+        - "7277:7277"   # optional; not required if only R2R consumes it internally
+      restart: unless-stopped
+  ```
+
+3) Point R2R at the load balancer
+
+- Update R2R env to use the LB: `UNSTRUCTURED_SERVICE_URL=http://unstructured-lb:7277`
+- Recreate the `r2r` container to pick up the env change.
+
+4) Tuning after scale-out
+
+- `ga_r2r.toml` → `[orchestration] ingestion_concurrency_limit`: increase gradually (e.g., +4 at a time) to utilize the added capacity.
+- `UNSTRUCTURED_NUM_WORKERS` on both hosts: set per CPU cores and memory pressure; start with 8–12.
+- Keep `embedding.concurrent_request_limit` aligned with your LLM/embedding throughput.
+
+5) Validation checklist
+
+- `curl http://unstructured-lb:7277/health` from inside the `r2r` container returns `ok`.
+- HAProxy stats (optional) show both backends up and serving.
+- Hatchet dashboard shows steady step starts; R2R `/v3/retrieval/rag` latency stays stable under load.
+
+6) Rollback
+
+- Point `UNSTRUCTURED_SERVICE_URL` back to `http://unstructured:7275` and stop the LB. No code changes required.
+
+Alternative: Docker Swarm
+
+- If you prefer a single compose across hosts, move to Docker Swarm with an overlay network and scale `unstructured` to multiple replicas. The Swarm VIP for `unstructured:7275` will load-balance across nodes automatically. This is heavier to stand up but eliminates the LB sidecar.
