@@ -556,8 +556,57 @@ class R2rBackend(RagBackend):
                         "description": f"Auto-generated collection for user {uid}",
                     },
                 )
-                mapping[uid] = created.get("results", {}).get("id")
+                result = created.get("results")
+                coll_id = ""
+                if isinstance(result, Mapping):
+                    coll_id = result.get("id") or ""
+                else:
+                    coll_id = created.get("id") or ""
+                mapping[uid] = str(coll_id).strip() if coll_id else ""
         return mapping
+
+    def _collection_filters(self, user_ids: Sequence[str]) -> list[str]:
+        """Resolve R2R collection ids for ``user_ids``.
+
+        R2R stores documents using opaque UUID collection ids.  We create
+        collections with the Nextcloud user id as the collection *name*, but
+        requests such as ``/v3/retrieval/rag`` must filter by the underlying
+        R2R collection ids.  We therefore ensure collections exist and return
+        their ids, falling back to the raw user ids only if resolution fails so
+        behaviour remains close to upstream semantics.
+        """
+
+        normalized = [
+            (u.strip() if isinstance(u, str) else "")
+            for u in user_ids
+        ]
+        normalized = [u for u in normalized if u]
+        if not normalized:
+            return []
+
+        try:
+            mapping = self.ensure_collections(normalized)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning(
+                "Failed to resolve collections; falling back to user ids",
+                extra={"error": str(exc), "user_ids": normalized},
+            )
+            mapping = {}
+
+        collection_ids = [
+            cid
+            for cid in (mapping.get(uid) for uid in normalized)
+            if isinstance(cid, str) and cid.strip()
+        ]
+
+        if collection_ids:
+            return collection_ids
+
+        logger.debug(
+            "Using user ids as collection filter fallback",
+            extra={"user_ids": normalized},
+        )
+        return normalized
 
     # ------------------------------------------------------------------
     # Documents
@@ -1169,7 +1218,9 @@ class R2rBackend(RagBackend):
         - hits: list[dict] (chunk hits with page_content + metadata)
         """
         payload: dict[str, Any] = {"query": query, "top_k": ctx_limit}
-        payload["filters"] = {"collection_ids": {"$overlap": [user_id]}}
+        collection_filters = self._collection_filters([user_id])
+        if collection_filters:
+            payload["filters"] = {"collection_ids": {"$overlap": collection_filters}}
         if scope_type and scope_list:
             payload["scope"] = {"type": scope_type, "ids": list(scope_list)}
         logger.debug("R2R search payload: %s", json.dumps(payload, sort_keys=True))
@@ -1232,7 +1283,9 @@ class R2rBackend(RagBackend):
         scope_list: Sequence[str] | None = None,
     ) -> list[dict]:
         payload: dict[str, Any] = {"query": query, "top_k": ctx_limit}
-        payload["filters"] = {"collection_ids": {"$overlap": [user_id]}}
+        collection_filters = self._collection_filters([user_id])
+        if collection_filters:
+            payload["filters"] = {"collection_ids": {"$overlap": collection_filters}}
         if scope_type and scope_list:
             payload["scope"] = {"type": scope_type, "ids": list(scope_list)}
         logger.debug("R2R search payload: %s", json.dumps(payload, sort_keys=True))

@@ -33,9 +33,11 @@ RAG request (minimal):
 {
   "query": "...",
   "top_k": 20,
-  "filters": {"collection_ids": {"$overlap": ["<userId>"]}}
+  "filters": {"collection_ids": {"$overlap": ["<collectionId>"]}}
 }
 ```
+
+CCBE resolves these collection identifiers by ensuring a per-user collection exists in R2R and then using the returned collection UUID in the filter. When resolution fails we fall back to the raw Nextcloud user id for compatibility, but a successful request should always reference the R2R collection id.
 
 RAG response (relevant fields):
 
@@ -200,7 +202,7 @@ For R2R load management and caching, look for:
 
 - “No documents retrieved” errors:
   - Ensure documents are indexed and in collections mapped to the querying `userId`.
-  - Filters: `filters.collection_ids.$overlap` must include the user’s collection name/ID.
+  - Filters: `filters.collection_ids.$overlap` must include the user’s R2R collection id (CCBE resolves the per-user collection name to the underlying UUID automatically).
 
 - R2R rejects a file due to excluded type/size:
   - CCBE logs an info message and returns a benign identifier, effectively treating the file as "skipped" so the client proceeds.
